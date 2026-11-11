@@ -28,6 +28,7 @@ jobs:
 
       - name: Configure iOS Podfile and Deployment Target 15.0
         run: |
+          flutter config --no-enable-swift-package-manager
           flutter build ios --config-only --no-codesign --build-name=6.18.0 --build-number=618 || true
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
           if [ -f ios/Podfile ]; then
