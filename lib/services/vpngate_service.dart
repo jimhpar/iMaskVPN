@@ -10,30 +10,94 @@ class VpnGateService {
   /// Fallback direct VPN Gate CSV endpoint
   static const String fallbackApiUrl = 'http://www.vpngate.net/api/iphone/';
 
-  /// Fetches real live servers from Oracle Cloud cache first, falling back to VPN Gate API
+  /// Fetches real live servers from Oracle Cloud cache first, falling back to VPN Gate API.
+  /// When [forceLiveVerify] is true, also performs a real TCP socket reachability check from the client
+  /// so any relay that went offline in the last few seconds is immediately removed.
   static Future<List<VpnServer>> fetchLiveServers({
     Duration timeout = const Duration(seconds: 8),
+    bool forceLiveVerify = true,
   }) async {
-    // 1. Try fast Oracle Cloud cached JSON first
+    List<VpnServer> candidateServers = [];
+
+    // 1. Try fast Oracle Cloud cached JSON first (with cache-busting timestamp)
     try {
       final cachedServers = await _fetchFromOracleCache(timeout: const Duration(seconds: 6));
       if (cachedServers.isNotEmpty) {
-        debugPrint('[VpnGateService] Loaded ${cachedServers.length} live servers from Oracle Cache');
-        return cachedServers;
+        debugPrint('[VpnGateService] Loaded ${cachedServers.length} servers from Oracle Cache');
+        candidateServers = cachedServers;
       }
     } catch (e) {
       debugPrint('[VpnGateService] Oracle cache unavailable, falling back to direct VPN Gate: $e');
     }
 
     // 2. Fallback to direct VPN Gate CSV parsing
-    return _fetchFromDirectCsv(timeout: timeout);
+    if (candidateServers.isEmpty) {
+      candidateServers = await _fetchFromDirectCsv(timeout: timeout);
+    }
+
+    if (!forceLiveVerify || kIsWeb || candidateServers.isEmpty) {
+      return candidateServers;
+    }
+
+    // 3. Perform live client-side TCP reachability check in parallel so inactive servers disappear immediately on Refresh
+    final List<VpnServer> activeServers = [];
+    final futures = candidateServers.map((server) async {
+      final isAlive = await _checkTcpAlive(server.ip, server.port);
+      return isAlive ? server : null;
+    });
+
+    final results = await Future.wait(futures);
+    for (final res in results) {
+      if (res != null) activeServers.add(res);
+    }
+
+    // Re-number country suffixes (#2, #3...) cleanly per country after removing any dead relays
+    final Map<String, int> countryCounts = {};
+    final List<VpnServer> cleanedServers = [];
+    for (final srv in activeServers) {
+      final baseCountry = srv.country.split('#').first.trim();
+      final count = (countryCounts[srv.countryCode] ?? 0) + 1;
+      countryCounts[srv.countryCode] = count;
+      final cleanCountryName = count > 1 ? '$baseCountry #$count' : baseCountry;
+      cleanedServers.add(
+        VpnServer(
+          id: srv.id,
+          name: srv.name,
+          country: cleanCountryName,
+          countryCode: srv.countryCode,
+          flagEmoji: srv.flagEmoji,
+          continent: srv.continent,
+          city: srv.city,
+          ip: srv.ip,
+          port: srv.port,
+          protocol: srv.protocol,
+          ping: srv.ping,
+          isVip: srv.isVip,
+          configData: srv.configData,
+        ),
+      );
+    }
+
+    return cleanedServers;
+  }
+
+  static Future<bool> _checkTcpAlive(String ip, int port) async {
+    try {
+      final socket = await Socket.connect(ip, port, timeout: const Duration(milliseconds: 2200));
+      socket.destroy();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<List<VpnServer>> _fetchFromOracleCache({required Duration timeout}) async {
     if (kIsWeb) return [];
     final client = HttpClient()..connectionTimeout = timeout;
     try {
-      final request = await client.getUrl(Uri.parse(oracleCacheUrl));
+      final uri = Uri.parse('$oracleCacheUrl?t=${DateTime.now().millisecondsSinceEpoch}');
+      final request = await client.getUrl(uri);
+      request.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
       final response = await request.close().timeout(timeout);
       if (response.statusCode != 200) return [];
 

@@ -615,77 +615,89 @@ class _HomeScreenState extends State<HomeScreen> {
         side: BorderSide(color: borderColor, width: isDark ? 1.0 : 2.0),
       ),
       builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            final filteredServers = vpn.servers.where((server) {
-              final matchesContinent =
-                  selectedContinent == 'All' || server.continent == selectedContinent;
-              final matchesSearch = searchQuery.isEmpty ||
-                  server.country.toLowerCase().contains(searchQuery.toLowerCase()) ||
-                  server.city.toLowerCase().contains(searchQuery.toLowerCase());
-              return matchesContinent && matchesSearch;
-            }).toList();
+        return AnimatedBuilder(
+          animation: vpn,
+          builder: (context, _) {
+            return StatefulBuilder(
+              builder: (context, setModalState) {
+                final filteredServers = vpn.servers.where((server) {
+                  final matchesContinent =
+                      selectedContinent == 'All' || server.continent == selectedContinent;
+                  final matchesSearch = searchQuery.isEmpty ||
+                      server.country.toLowerCase().contains(searchQuery.toLowerCase()) ||
+                      server.city.toLowerCase().contains(searchQuery.toLowerCase());
+                  return matchesContinent && matchesSearch;
+                }).toList();
 
-            return Container(
-              height: MediaQuery.of(context).size.height * 0.82,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 44,
-                      height: 5,
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.white24 : Colors.black26,
-                        borderRadius: BorderRadius.circular(3),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Header with Count & Live Refresh Button
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                return Container(
+                  height: MediaQuery.of(context).size.height * 0.82,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: Text(
-                          'Live Servers (${vpn.servers.length} Available)',
-                          style: GoogleFonts.outfit(
-                            color: textPrimary,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
+                      Center(
+                        child: Container(
+                          width: 44,
+                          height: 5,
+                          decoration: BoxDecoration(
+                            color: isDark ? Colors.white24 : Colors.black26,
+                            borderRadius: BorderRadius.circular(3),
                           ),
                         ),
                       ),
-                      IconButton(
-                        tooltip: 'Refresh Live VPN Gate Servers',
-                        icon: vpn.isFetchingVpnGate
-                            ? SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: isDark ? const Color(0xFF00F2FE) : Colors.black,
-                                ),
-                              )
-                            : Icon(Icons.refresh_rounded, color: textPrimary),
-                        onPressed: vpn.isFetchingVpnGate
-                            ? null
-                            : () async {
-                                setModalState(() {});
-                                await vpn.fetchVpnGateRelays();
-                                if (ctx.mounted) {
-                                  setModalState(() {});
-                                }
-                              },
+                      const SizedBox(height: 16),
+
+                      // Header with Count & Live Refresh Button
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Live Servers (${vpn.servers.length} Active)',
+                              style: GoogleFonts.outfit(
+                                color: textPrimary,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: isDark ? const Color(0xFF00F2FE) : Colors.black,
+                              foregroundColor: isDark ? Colors.black : Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              minimumSize: const Size(0, 34),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            onPressed: vpn.isFetchingVpnGate
+                                ? null
+                                : () async {
+                                    await vpn.fetchVpnGateRelays();
+                                  },
+                            icon: vpn.isFetchingVpnGate
+                                ? SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: isDark ? Colors.black : Colors.white,
+                                    ),
+                                  )
+                                : const Icon(Icons.refresh_rounded, size: 16),
+                            label: Text(
+                              vpn.isFetchingVpnGate ? 'Checking...' : 'Refresh',
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            icon: Icon(Icons.close_rounded, color: textSecondary),
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
                       ),
-                      IconButton(
-                        icon: Icon(Icons.close_rounded, color: textSecondary),
-                        onPressed: () => Navigator.pop(ctx),
-                      ),
-                    ],
-                  ),
                   const SizedBox(height: 12),
 
                   // Search Bar
@@ -866,6 +878,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             );
+          },
+        );
           },
         );
       },
