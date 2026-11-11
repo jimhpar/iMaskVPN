@@ -11,6 +11,8 @@ class DefaultFirebaseOptions {
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
         return android;
+      case TargetPlatform.iOS:
+        return ios;
       case TargetPlatform.windows:
         return windows;
       default:
@@ -45,6 +47,16 @@ class DefaultFirebaseOptions {
     projectId: 'imaskvpn',
     authDomain: 'imaskvpn.firebaseapp.com',
     storageBucket: 'imaskvpn.firebasestorage.app',
+  );
+
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'AIzaSyD7PIQZ_3ADDhlMsmDG0OsYfPbHFjT0zOw',
+    appId: '1:987280937545:ios:7d853a362ceb7e9b',
+    messagingSenderId: '987280937545',
+    projectId: 'imaskvpn',
+    authDomain: 'imaskvpn.firebaseapp.com',
+    storageBucket: 'imaskvpn.firebasestorage.app',
+    iosBundleId: 'com.imask.vpn.imaskVpn',
   );
 }
 
