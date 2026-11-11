@@ -26,8 +26,9 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Ensure iOS Platform Target is >= 15.0 for Firebase
+      - name: Configure iOS Podfile and Deployment Target 15.0
         run: |
+          flutter build ios --config-only --no-codesign --build-name=6.18.0 --build-number=618 || true
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
           if [ -f ios/Podfile ]; then
             sed -i '' "s/# platform :ios, '[0-9.]*'/platform :ios, '15.0'/g" ios/Podfile
@@ -35,26 +36,25 @@ jobs:
           fi
 
       - name: Build iOS Release (No Codesign)
-        run: flutter build ios --release --no-codesign --build-name=6.18.0 --build-number=618
+        run: |
+          set -o pipefail
+          flutter build ios --release --no-codesign --build-name=6.18.0 --build-number=618 2>&1 | tee ios_build.log
 
       - name: Package Runner.app into iMask-VPN-v6.18.ipa
+        if: success()
         run: |
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
           zip -r -9 iMask-VPN-v6.18.ipa Payload
 
-      - name: Upload iOS IPA Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: iMask-VPN-v6.18-iOS-IPA
-          path: iMask-VPN-v6.18.ipa
-          if-no-files-found: error
-
       - name: Publish iMask-VPN-v6.18.ipa to GitHub Releases
+        if: always()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v6.18
           name: "iMask VPN v6.18 (BlackBox THC)"
-          files: iMask-VPN-v6.18.ipa
+          files: |
+            iMask-VPN-v6.18.ipa
+            ios_build.log
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
