@@ -433,6 +433,28 @@ Endpoint = 129.225.114.149:51820''';
     return false;
   }
 
+  Future<bool> _configureAndroidGatewayRoute(VpnServer server) async {
+    final isDirect = server.id == 'oracle-india' || server.isVip;
+    final mode = isDirect ? 'direct' : 'vpngate';
+    final uri = Uri.parse(
+      'http://129.225.114.149:51821/api/android-route?mode=$mode&id=${Uri.encodeComponent(server.id)}&countryCode=${Uri.encodeComponent(server.countryCode)}',
+    );
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 25);
+    try {
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 28));
+      if (resp.statusCode != 200) return isDirect;
+      final body = await resp.transform(const SystemEncoding().decoder).join();
+      debugPrint('[iMask VPN] Android gateway route response: $body');
+      return body.contains('"ok":true');
+    } catch (e) {
+      debugPrint('[iMask VPN] Android gateway route error: $e');
+      return isDirect;
+    } finally {
+      client.close();
+    }
+  }
+
   Future<void> connect() async {
     if (_selectedServer == null) return;
 
@@ -444,16 +466,23 @@ Endpoint = 129.225.114.149:51820''';
 
     try {
       if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-        final granted = await _androidVpnChannel.invokeMethod<bool>(
-          'prepareAndConnect',
-          {
-            'serverName': _selectedServer!.country,
-            'serverIp': _selectedServer!.ip,
-            'protocol': _selectedServer!.protocol,
-            'config': _androidWireGuardConfig,
-          },
-        );
-        connectedSuccessfully = granted == true;
+        // 1. Switch Oracle gateway upstream route for 10.8.0.4 (either direct India or via chosen VPN Gate OpenVPN relay)
+        final routeOk = await _configureAndroidGatewayRoute(_selectedServer!);
+        if (_cancelRequested || !routeOk) {
+          connectedSuccessfully = false;
+        } else {
+          // 2. Activate native Android WireGuard VpnService tunnel (10.8.0.4 -> 129.225.114.149:51820)
+          final granted = await _androidVpnChannel.invokeMethod<bool>(
+            'prepareAndConnect',
+            {
+              'serverName': _selectedServer!.country,
+              'serverIp': _selectedServer!.ip,
+              'protocol': _selectedServer!.protocol,
+              'config': _androidWireGuardConfig,
+            },
+          );
+          connectedSuccessfully = granted == true;
+        }
       } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
         if (_selectedServer!.protocol == 'OpenVPN' &&
             _selectedServer!.configData != null &&
@@ -498,6 +527,7 @@ Endpoint = 129.225.114.149:51820''';
     try {
       if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
         await _androidVpnChannel.invokeMethod('disconnect');
+        unawaited(_configureAndroidGatewayRoute(_dedicatedOracleServer));
       } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
         await _deactivateWindowsTunnel();
         await _deactivateWindowsOpenVpnTunnel();
