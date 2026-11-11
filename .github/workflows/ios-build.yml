@@ -5,10 +5,13 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-ios:
-    name: Build Unsigned iOS IPA on macOS
-    runs-on: macos-14
+    name: Build iOS IPA on macOS
+    runs-on: macos-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -37,3 +40,12 @@ jobs:
           name: iMask-VPN-v6.18-iOS-IPA
           path: iMask-VPN-v6.18.ipa
           if-no-files-found: error
+
+      - name: Publish iMask-VPN-v6.18.ipa to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v6.18
+          name: "iMask VPN v6.18 (BlackBox THC)"
+          files: iMask-VPN-v6.18.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
