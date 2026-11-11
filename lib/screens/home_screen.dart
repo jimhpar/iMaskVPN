@@ -536,7 +536,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             child: Row(
                               children: [
                                 Text(
-                                  '${vpn.servers.length} Countries',
+                                  '${vpn.servers.length} Servers',
                                   style: TextStyle(
                                     color: isDark ? const Color(0xFF00F2FE) : Colors.white,
                                     fontSize: 11,
@@ -644,17 +644,41 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Header with Count
+                  // Header with Count & Live Refresh Button
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        'Select Location (${vpn.servers.length} Countries)',
-                        style: GoogleFonts.outfit(
-                          color: textPrimary,
-                          fontSize: 19,
-                          fontWeight: FontWeight.bold,
+                      Expanded(
+                        child: Text(
+                          'Live Servers (${vpn.servers.length} Available)',
+                          style: GoogleFonts.outfit(
+                            color: textPrimary,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
+                      ),
+                      IconButton(
+                        tooltip: 'Refresh Live VPN Gate Servers',
+                        icon: vpn.isFetchingVpnGate
+                            ? SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: isDark ? const Color(0xFF00F2FE) : Colors.black,
+                                ),
+                              )
+                            : Icon(Icons.refresh_rounded, color: textPrimary),
+                        onPressed: vpn.isFetchingVpnGate
+                            ? null
+                            : () async {
+                                setModalState(() {});
+                                await vpn.fetchVpnGateRelays();
+                                if (ctx.mounted) {
+                                  setModalState(() {});
+                                }
+                              },
                       ),
                       IconButton(
                         icon: Icon(Icons.close_rounded, color: textSecondary),

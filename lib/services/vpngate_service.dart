@@ -4,26 +4,89 @@ import 'package:flutter/foundation.dart';
 import '../models/vpn_server.dart';
 
 class VpnGateService {
-  static const String apiUrl = 'http://www.vpngate.net/api/iphone/';
+  /// Primary Oracle Cloud cached endpoint (fast, lightweight JSON)
+  static const String oracleCacheUrl = 'http://129.225.114.149:51821/vpngate.json';
 
-  /// Fetches real live servers from VPN Gate and returns a list of VpnServer objects
-  static Future<List<VpnServer>> fetchLiveServers({Duration timeout = const Duration(seconds: 8)}) async {
+  /// Fallback direct VPN Gate CSV endpoint
+  static const String fallbackApiUrl = 'http://www.vpngate.net/api/iphone/';
+
+  /// Fetches real live servers from Oracle Cloud cache first, falling back to VPN Gate API
+  static Future<List<VpnServer>> fetchLiveServers({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    // 1. Try fast Oracle Cloud cached JSON first
+    try {
+      final cachedServers = await _fetchFromOracleCache(timeout: const Duration(seconds: 6));
+      if (cachedServers.isNotEmpty) {
+        debugPrint('[VpnGateService] Loaded ${cachedServers.length} live servers from Oracle Cache');
+        return cachedServers;
+      }
+    } catch (e) {
+      debugPrint('[VpnGateService] Oracle cache unavailable, falling back to direct VPN Gate: $e');
+    }
+
+    // 2. Fallback to direct VPN Gate CSV parsing
+    return _fetchFromDirectCsv(timeout: timeout);
+  }
+
+  static Future<List<VpnServer>> _fetchFromOracleCache({required Duration timeout}) async {
+    if (kIsWeb) return [];
+    final client = HttpClient()..connectionTimeout = timeout;
+    try {
+      final request = await client.getUrl(Uri.parse(oracleCacheUrl));
+      final response = await request.close().timeout(timeout);
+      if (response.statusCode != 200) return [];
+
+      final content = await response.transform(utf8.decoder).join();
+      final Map<String, dynamic> decoded = jsonDecode(content) as Map<String, dynamic>;
+      final List<dynamic> rawServers = decoded['servers'] as List<dynamic>? ?? [];
+
+      final List<VpnServer> result = [];
+      for (final item in rawServers) {
+        if (item is! Map<String, dynamic>) continue;
+        result.add(
+          VpnServer(
+            id: item['id']?.toString() ?? 'vpngate',
+            name: item['name']?.toString() ?? 'VPN Gate Relay',
+            country: item['country']?.toString() ?? 'Unknown',
+            countryCode: (item['countryCode']?.toString() ?? 'UN').toUpperCase(),
+            flagEmoji: item['flagEmoji']?.toString() ?? '🌐',
+            continent: item['continent']?.toString() ?? 'Asia & Pacific',
+            city: item['city']?.toString() ?? 'VPN Gate Relay',
+            ip: item['ip']?.toString() ?? '',
+            port: (item['port'] is int) ? item['port'] as int : int.tryParse('${item['port']}') ?? 443,
+            protocol: item['protocol']?.toString() ?? 'OpenVPN',
+            ping: (item['ping'] is int) ? item['ping'] as int : int.tryParse('${item['ping']}') ?? 45,
+            isVip: item['isVip'] == true,
+            configData: item['configData']?.toString(),
+          ),
+        );
+      }
+      return result;
+    } finally {
+      client.close();
+    }
+  }
+
+  static Future<List<VpnServer>> _fetchFromDirectCsv({required Duration timeout}) async {
+    if (kIsWeb) return [];
     final List<VpnServer> servers = [];
-    final client = HttpClient();
-    client.connectionTimeout = timeout;
+    final client = HttpClient()..connectionTimeout = timeout;
 
     try {
-      final request = await client.getUrl(Uri.parse(apiUrl));
+      final request = await client.getUrl(Uri.parse(fallbackApiUrl));
       request.headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
       final response = await request.close().timeout(timeout);
 
       if (response.statusCode != 200) {
-        debugPrint('[VpnGateService] API returned status: ${response.statusCode}');
+        debugPrint('[VpnGateService] Direct API returned status: ${response.statusCode}');
         return [];
       }
 
       final content = await response.transform(utf8.decoder).join();
-      final lines = LineSplitter.split(content).where((l) => l.isNotEmpty && !l.startsWith('*')).toList();
+      final lines = LineSplitter.split(content)
+          .where((l) => l.isNotEmpty && !l.startsWith('*'))
+          .toList();
 
       if (lines.length < 2) return [];
 
@@ -33,73 +96,106 @@ class VpnGateService {
         headerIndices[header[i].replaceAll('#', '').trim()] = i;
       }
 
+      final hostIdx = headerIndices['HostName'] ?? 0;
       final ipIdx = headerIndices['IP'] ?? 1;
       final scoreIdx = headerIndices['Score'] ?? 2;
       final pingIdx = headerIndices['Ping'] ?? 3;
+      final speedIdx = headerIndices['Speed'] ?? 4;
       final countryLongIdx = headerIndices['CountryLong'] ?? 5;
       final countryShortIdx = headerIndices['CountryShort'] ?? 6;
       final ovpnIdx = headerIndices['OpenVPN_ConfigData_Base64'] ?? 14;
 
-      // Group candidate servers by country code, pick best by score/ping
-      final Map<String, _VpnGateEntry> bestPerCountry = {};
+      final List<_VpnGateEntry> entries = [];
 
       for (int i = 1; i < lines.length; i++) {
         final cols = lines[i].split(',');
         if (cols.length <= ovpnIdx) continue;
 
+        final hostName = cols[hostIdx].trim();
         final ip = cols[ipIdx].trim();
         final score = int.tryParse(cols[scoreIdx].trim()) ?? 0;
-        final ping = int.tryParse(cols[pingIdx].trim()) ?? 99;
-        final countryLong = cols[countryLongIdx].trim();
+        final ping = int.tryParse(cols[pingIdx].trim()) ?? 45;
+        final speed = int.tryParse(cols[speedIdx].trim()) ?? 0;
+        String countryLong = cols[countryLongIdx].trim();
         final countryShort = cols[countryShortIdx].trim().toUpperCase();
         final ovpnB64 = cols[ovpnIdx].trim();
 
         if (ip.isEmpty || countryShort.isEmpty || ovpnB64.isEmpty) continue;
 
-        final entry = _VpnGateEntry(
-          ip: ip,
-          score: score,
-          ping: ping,
-          countryLong: countryLong,
-          countryShort: countryShort,
-          ovpnBase64: ovpnB64,
-        );
-
-        if (!bestPerCountry.containsKey(countryShort) || score > bestPerCountry[countryShort]!.score) {
-          bestPerCountry[countryShort] = entry;
+        if (countryLong.contains('Korea')) {
+          countryLong = 'South Korea';
+        } else if (countryLong.contains('Viet Nam')) {
+          countryLong = 'Vietnam';
+        } else if (countryLong.contains('Russian Federation')) {
+          countryLong = 'Russia';
+        } else if (countryLong.contains('(')) {
+          countryLong = countryLong.split('(').first.trim();
         }
+
+        entries.add(
+          _VpnGateEntry(
+            hostName: hostName.isNotEmpty ? hostName : 'Public Relay',
+            ip: ip,
+            score: score,
+            ping: ping > 0 ? ping : 45,
+            speed: speed,
+            countryLong: countryLong,
+            countryShort: countryShort,
+            ovpnBase64: ovpnB64,
+          ),
+        );
       }
 
-      // Convert best entries to VpnServer models
-      for (final entry in bestPerCountry.values) {
+      entries.sort((a, b) => b.score.compareTo(a.score));
+
+      final Map<String, int> countryCounts = {};
+      final Set<String> seenIps = {};
+
+      for (final entry in entries) {
+        if (seenIps.contains(entry.ip)) continue;
+        seenIps.add(entry.ip);
+
+        final count = (countryCounts[entry.countryShort] ?? 0) + 1;
+        if (count > 15) continue;
+        countryCounts[entry.countryShort] = count;
+
         String decodedOvpn = '';
         try {
-          decodedOvpn = utf8.decode(base64.decode(entry.ovpnBase64));
+          decodedOvpn = utf8.decode(base64.decode(entry.ovpnBase64), allowMalformed: true);
         } catch (_) {}
 
-        if (decodedOvpn.isEmpty) continue;
+        if (decodedOvpn.isEmpty || !decodedOvpn.contains('client')) continue;
 
         final continent = _getContinentByCountryCode(entry.countryShort);
         final flagEmoji = _countryCodeToEmoji(entry.countryShort);
+        final speedMbps = entry.speed > 0 ? (entry.speed / 1000000).toStringAsFixed(1) : null;
+        final displayCountry = count > 1 ? '${entry.countryLong} #$count' : entry.countryLong;
 
         servers.add(
           VpnServer(
-            id: 'vpngate-${entry.countryShort.toLowerCase()}',
-            name: '${entry.countryLong} Relay',
-            country: entry.countryLong,
+            id: 'vpngate-${entry.countryShort.toLowerCase()}-${entry.ip.replaceAll('.', '-')}',
+            name: '${entry.countryLong} (${entry.hostName})',
+            country: displayCountry,
             countryCode: entry.countryShort,
             flagEmoji: flagEmoji,
             continent: continent,
-            city: 'Public Relay',
+            city: speedMbps != null ? '${entry.hostName} • $speedMbps Mbps' : '${entry.hostName} • VPN Gate',
             ip: entry.ip,
             port: 443,
             protocol: 'OpenVPN',
-            ping: entry.ping > 0 ? entry.ping : 45,
+            ping: entry.ping,
             isVip: false,
             configData: decodedOvpn,
           ),
         );
       }
+
+      servers.sort((a, b) {
+        final aIsPrimary = !a.country.contains('#');
+        final bIsPrimary = !b.country.contains('#');
+        if (aIsPrimary != bIsPrimary) return aIsPrimary ? -1 : 1;
+        return a.ping.compareTo(b.ping);
+      });
     } catch (e) {
       debugPrint('[VpnGateService] Error fetching VPN Gate servers: $e');
     } finally {
@@ -132,6 +228,8 @@ class VpnGateService {
       case 'PK':
       case 'NP':
       case 'PH':
+      case 'AU':
+      case 'NZ':
         return 'Asia & Pacific';
       case 'US':
       case 'CA':
@@ -156,9 +254,6 @@ class VpnGateService {
       case 'CL':
       case 'CO':
         return 'South America';
-      case 'AU':
-      case 'NZ':
-        return 'Asia & Pacific';
       case 'ZA':
       case 'EG':
       case 'NG':
@@ -171,20 +266,23 @@ class VpnGateService {
 }
 
 class _VpnGateEntry {
+  final String hostName;
   final String ip;
   final int score;
   final int ping;
+  final int speed;
   final String countryLong;
   final String countryShort;
   final String ovpnBase64;
 
   _VpnGateEntry({
+    required this.hostName,
     required this.ip,
     required this.score,
     required this.ping,
+    required this.speed,
     required this.countryLong,
     required this.countryShort,
     required this.ovpnBase64,
   });
 }
-
