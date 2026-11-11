@@ -465,13 +465,15 @@ Endpoint = 129.225.114.149:51820''';
     bool connectedSuccessfully = true;
 
     try {
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-        // 1. Switch Oracle gateway upstream route for 10.8.0.4 (either direct India or via chosen VPN Gate OpenVPN relay)
+      if (!kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.iOS)) {
+        // 1. Switch Oracle gateway upstream route (either direct India or via chosen VPN Gate OpenVPN relay)
         final routeOk = await _configureAndroidGatewayRoute(_selectedServer!);
         if (_cancelRequested || !routeOk) {
           connectedSuccessfully = false;
         } else {
-          // 2. Activate native Android WireGuard VpnService tunnel (10.8.0.4 -> 129.225.114.149:51820)
+          // 2. Activate native Android VpnService or iOS NetworkExtension tunnel
           final granted = await _androidVpnChannel.invokeMethod<bool>(
             'prepareAndConnect',
             {
@@ -525,7 +527,9 @@ Endpoint = 129.225.114.149:51820''';
     notifyListeners();
 
     try {
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      if (!kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.iOS)) {
         await _androidVpnChannel.invokeMethod('disconnect');
         unawaited(_configureAndroidGatewayRoute(_dedicatedOracleServer));
       } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
