@@ -11,7 +11,7 @@ permissions:
 jobs:
   build-ios:
     name: Build iOS IPA on macOS
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -19,11 +19,20 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.47.9'
           channel: 'stable'
           cache: true
 
       - name: Install Dependencies
         run: flutter pub get
+
+      - name: Ensure iOS Platform Target is >= 15.0 for Firebase
+        run: |
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
+          if [ -f ios/Podfile ]; then
+            sed -i '' "s/# platform :ios, '[0-9.]*'/platform :ios, '15.0'/g" ios/Podfile
+            sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.0'/g" ios/Podfile
+          fi
 
       - name: Build iOS Release (No Codesign)
         run: flutter build ios --release --no-codesign --build-name=6.18.0 --build-number=618

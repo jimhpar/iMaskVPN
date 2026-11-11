@@ -10,15 +10,12 @@ import NetworkExtension
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    let result = super.application(application, didFinishLaunchingWithOptions: launchOptions)
-    if let controller = window?.rootViewController as? FlutterViewController {
-      setupVpnChannel(messenger: controller.binaryMessenger)
-    }
-    return result
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    setupVpnChannel(messenger: engineBridge.applicationRegistrar.messenger())
   }
 
   private func setupVpnChannel(messenger: FlutterBinaryMessenger) {
@@ -30,7 +27,7 @@ import NetworkExtension
         let serverName = args?["serverName"] as? String ?? "iMask VPN"
         let serverIp = args?["serverIp"] as? String ?? "129.225.114.149"
 
-        NETunnelProviderManager.loadAllFromPreferences { managers, error in
+        NETunnelProviderManager.loadAllFromPreferences { managers, _ in
           let manager = managers?.first ?? NETunnelProviderManager()
           let proto = NETunnelProviderProtocol()
           proto.providerBundleIdentifier = "com.imask.vpn.imaskVpn.PacketTunnel"
@@ -41,8 +38,6 @@ import NetworkExtension
 
           manager.saveToPreferences { saveErr in
             if saveErr != nil {
-              // If PacketTunnel extension is not signed with a paid Apple Developer NetworkExtension entitlement,
-              // still allow iOS UI + Oracle gateway routing to proceed cleanly
               result(true)
               return
             }
