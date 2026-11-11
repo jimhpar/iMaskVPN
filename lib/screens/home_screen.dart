@@ -271,7 +271,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   // --- BIG HIGH-CONTRAST CONNECT BUTTON ---
                   GestureDetector(
-                    onTap: isConnecting ? null : () => vpn.toggleConnection(),
+                    onTap: () => vpn.toggleConnection(),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 300),
                       width: 155,
@@ -330,7 +330,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               isConnected
                                   ? 'CONNECTED'
                                   : isConnecting
-                                      ? 'CONNECTING...'
+                                      ? 'TAP TO STOP'
                                       : 'TAP TO CONNECT',
                               style: GoogleFonts.outfit(
                                 fontSize: 12,

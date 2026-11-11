@@ -289,6 +289,8 @@ Endpoint = 129.225.114.149:51820''';
     return buffer.toString();
   }
 
+  bool _cancelRequested = false;
+
   Future<bool> _activateWindowsOpenVpnTunnel(String ovpnConfig) async {
     final exe = _findOpenVpnExe();
     if (exe == null) {
@@ -298,6 +300,8 @@ Endpoint = 129.225.114.149:51820''';
 
     try {
       await _deactivateWindowsOpenVpnTunnel();
+      if (_cancelRequested) return false;
+
       final tempDir = Directory.systemTemp.path;
       final confFile = File('$tempDir\\imask_vpngate.ovpn');
       final logFile = File('$tempDir\\imask_openvpn.log');
@@ -309,18 +313,35 @@ Endpoint = 129.225.114.149:51820''';
 
       await confFile.writeAsString(_prepareOpenVpnConfig(ovpnConfig));
 
-      // Launch OpenVPN elevated so it can configure TAP/Wintun IP and Windows routing table
-      await Process.run('powershell', [
-        '-NoProfile',
-        '-WindowStyle',
-        'Hidden',
-        '-Command',
-        'Start-Process -FilePath "$exe" -ArgumentList \'--config "${confFile.path}" --log "${logFile.path}"\' -Verb RunAs -WindowStyle Hidden'
-      ]);
+      // Launch OpenVPN directly (app already has requireAdministrator manifest)
+      // Fallback to RunAs only if direct launch fails
+      try {
+        _openVpnProcess = await Process.start(
+          exe,
+          ['--config', confFile.path, '--log', logFile.path],
+          mode: ProcessStartMode.normal,
+        );
+      } catch (_) {
+        await Process.run('powershell', [
+          '-NoProfile',
+          '-WindowStyle',
+          'Hidden',
+          '-Command',
+          'Start-Process -FilePath "$exe" -ArgumentList \'--config "${confFile.path}" --log "${logFile.path}"\' -Verb RunAs -WindowStyle Hidden'
+        ]);
+      }
 
-      // Wait up to 14 seconds for "Initialization Sequence Completed" in logFile
-      for (int i = 0; i < 28; i++) {
+      // Wait up to 9 seconds for "Initialization Sequence Completed" in logFile
+      for (int i = 0; i < 18; i++) {
+        if (_cancelRequested) {
+          await _deactivateWindowsOpenVpnTunnel();
+          return false;
+        }
         await Future.delayed(const Duration(milliseconds: 500));
+        if (_cancelRequested) {
+          await _deactivateWindowsOpenVpnTunnel();
+          return false;
+        }
         if (logFile.existsSync()) {
           final logText = await logFile.readAsString();
           if (logText.contains('Initialization Sequence Completed') &&
@@ -329,6 +350,8 @@ Endpoint = 129.225.114.149:51820''';
           }
           if (logText.contains('AUTH_FAILED') ||
               logText.contains('Exiting due to fatal error') ||
+              logText.contains('Connection refused') ||
+              logText.contains('TLS Error:') ||
               logText.contains('All TAP-Windows adapters on this system are currently in use')) {
             debugPrint('[iMask VPN] OpenVPN relay rejected or failed: $logText');
             await _deactivateWindowsOpenVpnTunnel();
@@ -368,9 +391,11 @@ Endpoint = 129.225.114.149:51820''';
   }
 
   Future<void> toggleConnection() async {
-    if (_status == VpnStatus.connected) {
+    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
+      _cancelRequested = true;
       await disconnect();
     } else if (_status == VpnStatus.disconnected) {
+      _cancelRequested = false;
       await connect();
     }
   }
@@ -382,8 +407,9 @@ Endpoint = 129.225.114.149:51820''';
         return true;
       }
     }
+    if (_cancelRequested) return false;
 
-    // Try up to 2 other live relays from the same country code if the chosen volunteer relay rejects or times out
+    // Try up to 4 other live relays from the same country code if the chosen volunteer relay rejects or times out
     final sameCountryCandidates = _servers
         .where((s) =>
             s.id != primary.id &&
@@ -391,10 +417,11 @@ Endpoint = 129.225.114.149:51820''';
             s.protocol == 'OpenVPN' &&
             s.configData != null &&
             s.configData!.isNotEmpty)
-        .take(2)
+        .take(4)
         .toList();
 
     for (final candidate in sameCountryCandidates) {
+      if (_cancelRequested) return false;
       debugPrint('[iMask VPN] Primary relay ${primary.ip} failed, trying alternate ${candidate.country} (${candidate.ip})');
       if (await _activateWindowsOpenVpnTunnel(candidate.configData!)) {
         _selectedServer = candidate;
@@ -409,6 +436,7 @@ Endpoint = 129.225.114.149:51820''';
   Future<void> connect() async {
     if (_selectedServer == null) return;
 
+    _cancelRequested = false;
     _status = VpnStatus.connecting;
     notifyListeners();
 
@@ -443,13 +471,18 @@ Endpoint = 129.225.114.149:51820''';
       connectedSuccessfully = false;
     }
 
-    if (!connectedSuccessfully) {
+    if (!connectedSuccessfully || _cancelRequested) {
       _status = VpnStatus.disconnected;
       notifyListeners();
       return;
     }
 
-    await Future.delayed(const Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (_cancelRequested) {
+      _status = VpnStatus.disconnected;
+      notifyListeners();
+      return;
+    }
 
     _status = VpnStatus.connected;
     _connectedSeconds = 0;
@@ -458,6 +491,7 @@ Endpoint = 129.225.114.149:51820''';
   }
 
   Future<void> disconnect() async {
+    _cancelRequested = true;
     _status = VpnStatus.disconnecting;
     notifyListeners();
 
