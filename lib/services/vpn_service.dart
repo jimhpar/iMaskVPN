@@ -172,6 +172,15 @@ Endpoint = 129.225.114.149:51820''';
     return null;
   }
 
+  Future<bool> _isWireGuardServiceInstalled() async {
+    try {
+      final res = await Process.run('sc.exe', ['query', r'WireGuardTunnel$imask']);
+      return res.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<bool> _activateWindowsTunnel(String config) async {
     final wgPath = _findWireGuardExe();
     if (wgPath == null) {
@@ -184,8 +193,10 @@ Endpoint = 129.225.114.149:51820''';
       final confFile = File('$tempDir\\imask.conf');
       await confFile.writeAsString(config);
 
-      // Clean up any stale tunnel first
-      await Process.run(wgPath, ['/uninstalltunnelservice', 'imask'], runInShell: false);
+      // Clean up any stale tunnel first ONLY if the service actually exists
+      if (await _isWireGuardServiceInstalled()) {
+        await Process.run(wgPath, ['/uninstalltunnelservice', 'imask'], runInShell: false);
+      }
 
       // Attempt direct install (succeeds if running as Administrator)
       final res = await Process.run(
@@ -204,7 +215,8 @@ Endpoint = 129.225.114.149:51820''';
           'Start-Process "$wgPath" -ArgumentList "/installtunnelservice `"${confFile.path}`"" -Verb RunAs -Wait'
         ]);
       }
-      return true;
+
+      return await _isWireGuardServiceInstalled();
     } catch (e) {
       debugPrint('[iMask VPN] Error activating Windows tunnel: $e');
       return false;
@@ -216,13 +228,19 @@ Endpoint = 129.225.114.149:51820''';
     if (wgPath == null) return;
 
     try {
+      // Check if WireGuardTunnel$imask is actually installed before calling /uninstalltunnelservice
+      // Prevents wireguard.exe from popping up "The specified service does not exist as an installed service."
+      if (!await _isWireGuardServiceInstalled()) {
+        return;
+      }
+
       final res = await Process.run(
         wgPath,
         ['/uninstalltunnelservice', 'imask'],
         runInShell: false,
       );
 
-      if (res.exitCode != 0) {
+      if (res.exitCode != 0 && await _isWireGuardServiceInstalled()) {
         await Process.run('powershell', [
           '-NoProfile',
           '-WindowStyle',
@@ -239,9 +257,12 @@ Endpoint = 129.225.114.149:51820''';
   Process? _openVpnProcess;
 
   String? _findOpenVpnExe() {
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
     final candidatePaths = [
+      '$exeDir\\tools\\openvpn\\openvpn.exe',
       '${Directory.current.path}\\tools\\openvpn\\openvpn.exe',
       r'D:\WorkStation\Antigravity\iMask\tools\openvpn\openvpn.exe',
+      r'C:\Program Files\iMask VPN\tools\openvpn\openvpn.exe',
       r'C:\Program Files\OpenVPN\bin\openvpn.exe',
       r'C:\Program Files (x86)\OpenVPN\bin\openvpn.exe',
     ];
@@ -249,6 +270,23 @@ Endpoint = 129.225.114.149:51820''';
       if (File(p).existsSync()) return p;
     }
     return null;
+  }
+
+  String _prepareOpenVpnConfig(String rawConfig) {
+    final buffer = StringBuffer(rawConfig);
+    buffer.writeln();
+    if (!rawConfig.contains('data-ciphers')) {
+      buffer.writeln('data-ciphers AES-128-CBC:AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305');
+    }
+    if (!rawConfig.contains('redirect-gateway')) {
+      buffer.writeln('redirect-gateway def1 bypass-dhcp');
+    }
+    if (!rawConfig.contains('dhcp-option DNS')) {
+      buffer.writeln('dhcp-option DNS 1.1.1.1');
+      buffer.writeln('dhcp-option DNS 8.8.8.8');
+    }
+    buffer.writeln('block-outside-dns');
+    return buffer.toString();
   }
 
   Future<bool> _activateWindowsOpenVpnTunnel(String ovpnConfig) async {
@@ -262,19 +300,45 @@ Endpoint = 129.225.114.149:51820''';
       await _deactivateWindowsOpenVpnTunnel();
       final tempDir = Directory.systemTemp.path;
       final confFile = File('$tempDir\\imask_vpngate.ovpn');
-      await confFile.writeAsString(ovpnConfig);
+      final logFile = File('$tempDir\\imask_openvpn.log');
+      if (logFile.existsSync()) {
+        try {
+          await logFile.delete();
+        } catch (_) {}
+      }
 
-      _openVpnProcess = await Process.start(
-        exe,
-        ['--config', confFile.path],
-        mode: ProcessStartMode.normal,
-      );
+      await confFile.writeAsString(_prepareOpenVpnConfig(ovpnConfig));
 
-      _openVpnProcess?.exitCode.then((code) {
-        debugPrint('[iMask VPN] OpenVPN process exited with code $code');
-      });
+      // Launch OpenVPN elevated so it can configure TAP/Wintun IP and Windows routing table
+      await Process.run('powershell', [
+        '-NoProfile',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        'Start-Process -FilePath "$exe" -ArgumentList \'--config "${confFile.path}" --log "${logFile.path}"\' -Verb RunAs -WindowStyle Hidden'
+      ]);
 
-      return true;
+      // Wait up to 14 seconds for "Initialization Sequence Completed" in logFile
+      for (int i = 0; i < 28; i++) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (logFile.existsSync()) {
+          final logText = await logFile.readAsString();
+          if (logText.contains('Initialization Sequence Completed') &&
+              !logText.contains('route addition failed')) {
+            return true;
+          }
+          if (logText.contains('AUTH_FAILED') ||
+              logText.contains('Exiting due to fatal error') ||
+              logText.contains('All TAP-Windows adapters on this system are currently in use')) {
+            debugPrint('[iMask VPN] OpenVPN relay rejected or failed: $logText');
+            await _deactivateWindowsOpenVpnTunnel();
+            return false;
+          }
+        }
+      }
+
+      await _deactivateWindowsOpenVpnTunnel();
+      return false;
     } catch (e) {
       debugPrint('[iMask VPN] Error starting OpenVPN: $e');
       return false;
@@ -287,7 +351,19 @@ Endpoint = 129.225.114.149:51820''';
         _openVpnProcess!.kill(ProcessSignal.sigterm);
         _openVpnProcess = null;
       }
-      await Process.run('taskkill', ['/f', '/im', 'openvpn.exe']);
+      final check = await Process.run('tasklist', ['/FI', 'IMAGENAME eq openvpn.exe']);
+      if (check.stdout.toString().toLowerCase().contains('openvpn.exe')) {
+        final killRes = await Process.run('taskkill', ['/f', '/im', 'openvpn.exe']);
+        if (killRes.exitCode != 0) {
+          await Process.run('powershell', [
+            '-NoProfile',
+            '-WindowStyle',
+            'Hidden',
+            '-Command',
+            'Start-Process "taskkill.exe" -ArgumentList "/f /im openvpn.exe" -Verb RunAs -WindowStyle Hidden -Wait'
+          ]);
+        }
+      }
     } catch (_) {}
   }
 
@@ -297,6 +373,37 @@ Endpoint = 129.225.114.149:51820''';
     } else if (_status == VpnStatus.disconnected) {
       await connect();
     }
+  }
+
+  Future<bool> _connectWindowsOpenVpnWithSameCountryFailover() async {
+    final primary = _selectedServer!;
+    if (primary.configData != null && primary.configData!.isNotEmpty) {
+      if (await _activateWindowsOpenVpnTunnel(primary.configData!)) {
+        return true;
+      }
+    }
+
+    // Try up to 2 other live relays from the same country code if the chosen volunteer relay rejects or times out
+    final sameCountryCandidates = _servers
+        .where((s) =>
+            s.id != primary.id &&
+            s.countryCode == primary.countryCode &&
+            s.protocol == 'OpenVPN' &&
+            s.configData != null &&
+            s.configData!.isNotEmpty)
+        .take(2)
+        .toList();
+
+    for (final candidate in sameCountryCandidates) {
+      debugPrint('[iMask VPN] Primary relay ${primary.ip} failed, trying alternate ${candidate.country} (${candidate.ip})');
+      if (await _activateWindowsOpenVpnTunnel(candidate.configData!)) {
+        _selectedServer = candidate;
+        notifyListeners();
+        return true;
+      }
+    }
+
+    return false;
   }
 
   Future<void> connect() async {
@@ -323,11 +430,7 @@ Endpoint = 129.225.114.149:51820''';
         if (_selectedServer!.protocol == 'OpenVPN' &&
             _selectedServer!.configData != null &&
             _selectedServer!.configData!.isNotEmpty) {
-          final success = await _activateWindowsOpenVpnTunnel(_selectedServer!.configData!);
-          if (!success) {
-            debugPrint('[iMask VPN] OpenVPN failed, auto-failover to WireGuard');
-            connectedSuccessfully = await _activateWindowsTunnel(_windowsWireGuardConfig);
-          }
+          connectedSuccessfully = await _connectWindowsOpenVpnWithSameCountryFailover();
         } else {
           final config = (_selectedServer?.configData?.isNotEmpty ?? false)
               ? _selectedServer!.configData!
@@ -337,9 +440,7 @@ Endpoint = 129.225.114.149:51820''';
       }
     } catch (e) {
       debugPrint('[iMask VPN] connect error: $e');
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-        connectedSuccessfully = false;
-      }
+      connectedSuccessfully = false;
     }
 
     if (!connectedSuccessfully) {
@@ -348,7 +449,7 @@ Endpoint = 129.225.114.149:51820''';
       return;
     }
 
-    await Future.delayed(const Duration(milliseconds: 1200));
+    await Future.delayed(const Duration(milliseconds: 500));
 
     _status = VpnStatus.connected;
     _connectedSeconds = 0;
