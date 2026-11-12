@@ -22,12 +22,25 @@ class VpnService extends ChangeNotifier {
   int _connectedSeconds = 0;
   int? _maxContinuousSeconds;
   VoidCallback? onSessionLimitReached;
+  VoidCallback? onIosTunnelSetupRequired;
+  VoidCallback? onIosManualDisconnectRequired;
+  String? _lastErrorCode;
+  String? _lastErrorMessage;
+  bool _awaitingIosTunnelResume = false;
   Timer? _statsTimer;
   Timer? _durationTimer;
 
   double get downloadSpeed => _downloadSpeed;
   double get uploadSpeed => _uploadSpeed;
   int get connectedSeconds => _connectedSeconds;
+  String? get lastErrorCode => _lastErrorCode;
+  String? get lastErrorMessage => _lastErrorMessage;
+  String get iosWireGuardConfig => _iosWireGuardConfig;
+
+  void clearError() {
+    _lastErrorCode = null;
+    _lastErrorMessage = null;
+  }
 
   void setMaxContinuousSeconds(int? seconds) {
     _maxContinuousSeconds = seconds;
@@ -64,6 +77,20 @@ MTU = 1420
 [Peer]
 PublicKey = E0qU/cE/8tOdyVgpZ/53ga3G3mpO1tNiTLOmd1byt18=
 PresharedKey = to60IvZ6o/qEEKRnfSK/niViF9ovno5FxDStyTZoZY0=
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+Endpoint = 129.225.114.149:51820''';
+
+  /// iOS Dedicated WireGuard Config (iphone17 -> 10.8.0.3)
+  static const String _iosWireGuardConfig = '''[Interface]
+PrivateKey = gFQeQSjrvjuHU+y94rv+1iPxZzVv7nP46AhuX16wvnQ=
+Address = 10.8.0.3/24
+DNS = 1.1.1.1
+MTU = 1280
+
+[Peer]
+PublicKey = E0qU/cE/8tOdyVgpZ/53ga3G3mpO1tNiTLOmd1byt18=
+PresharedKey = J64Ai1d+AO2U3lrbdc15NcBBIPP0GBJiVk9OlPkVItQ=
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 Endpoint = 129.225.114.149:51820''';
@@ -148,14 +175,90 @@ Endpoint = 129.225.114.149:51820''';
 
   void selectServer(VpnServer server) {
     if (_status == VpnStatus.connected) {
-      disconnect().then((_) {
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
         _selectedServer = server;
         notifyListeners();
         connect();
-      });
+      } else {
+        disconnect().then((_) {
+          _selectedServer = server;
+          notifyListeners();
+          connect();
+        });
+      }
     } else {
       _selectedServer = server;
       notifyListeners();
+    }
+  }
+
+  Future<bool> isNativeTunnelRunning() async {
+    if (kIsWeb ||
+        (defaultTargetPlatform != TargetPlatform.android &&
+            defaultTargetPlatform != TargetPlatform.iOS)) {
+      return false;
+    }
+    try {
+      final running = await _androidVpnChannel.invokeMethod<bool>('isRunning');
+      return running == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> syncWithSystemTunnel() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
+    final running = await isNativeTunnelRunning();
+    if (running && _status == VpnStatus.disconnected && _awaitingIosTunnelResume) {
+      _awaitingIosTunnelResume = false;
+      await connect();
+      return true;
+    } else if (!running && _status == VpnStatus.connected) {
+      _status = VpnStatus.disconnected;
+      _stopTimers();
+      _downloadSpeed = 0.0;
+      _uploadSpeed = 0.0;
+      _connectedSeconds = 0;
+      notifyListeners();
+      return false;
+    }
+    return running;
+  }
+
+  Future<bool> shareIosWireGuardConfig() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
+    try {
+      final ok = await _androidVpnChannel.invokeMethod<bool>(
+        'shareWireGuardConfig',
+        {'config': _iosWireGuardConfig},
+      );
+      return ok == true;
+    } catch (e) {
+      debugPrint('[iMask VPN] shareIosWireGuardConfig error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> openIosAppStoreWireGuard() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
+    try {
+      final ok = await _androidVpnChannel.invokeMethod<bool>(
+        'openExternalUrl',
+        {'url': 'https://apps.apple.com/app/wireguard/id1441195209'},
+      );
+      return ok == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> openIosVpnSettings() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
+    try {
+      final ok = await _androidVpnChannel.invokeMethod<bool>('openVpnSettings');
+      return ok == true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -459,6 +562,7 @@ Endpoint = 129.225.114.149:51820''';
     if (_selectedServer == null) return;
 
     _cancelRequested = false;
+    clearError();
     _status = VpnStatus.connecting;
     notifyListeners();
 
@@ -468,22 +572,30 @@ Endpoint = 129.225.114.149:51820''';
       if (!kIsWeb &&
           (defaultTargetPlatform == TargetPlatform.android ||
               defaultTargetPlatform == TargetPlatform.iOS)) {
+        final isIos = defaultTargetPlatform == TargetPlatform.iOS;
         // 1. Switch Oracle gateway upstream route (either direct India or via chosen VPN Gate OpenVPN relay)
         final routeOk = await _configureAndroidGatewayRoute(_selectedServer!);
         if (_cancelRequested || !routeOk) {
           connectedSuccessfully = false;
+          if (!_cancelRequested) {
+            _lastErrorCode = 'GATEWAY_ROUTE_FAILED';
+            _lastErrorMessage = 'Could not configure upstream VPN gateway route.';
+          }
         } else {
-          // 2. Activate native Android VpnService or iOS NetworkExtension tunnel
+          // 2. Activate native Android VpnService or verify/start iOS tunnel
           final granted = await _androidVpnChannel.invokeMethod<bool>(
             'prepareAndConnect',
             {
               'serverName': _selectedServer!.country,
               'serverIp': _selectedServer!.ip,
               'protocol': _selectedServer!.protocol,
-              'config': _androidWireGuardConfig,
+              'config': isIos ? _iosWireGuardConfig : _androidWireGuardConfig,
             },
           );
           connectedSuccessfully = granted == true;
+          if (connectedSuccessfully) {
+            _awaitingIosTunnelResume = false;
+          }
         }
       } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
         if (_selectedServer!.protocol == 'OpenVPN' &&
@@ -497,8 +609,19 @@ Endpoint = 129.225.114.149:51820''';
           connectedSuccessfully = await _activateWindowsTunnel(config);
         }
       }
+    } on PlatformException catch (e) {
+      debugPrint('[iMask VPN] connect PlatformException (${e.code}): ${e.message}');
+      _lastErrorCode = e.code;
+      _lastErrorMessage = e.message;
+      connectedSuccessfully = false;
+      if (e.code == 'IOS_TUNNEL_SETUP_REQUIRED') {
+        _awaitingIosTunnelResume = true;
+        onIosTunnelSetupRequired?.call();
+      }
     } catch (e) {
       debugPrint('[iMask VPN] connect error: $e');
+      _lastErrorCode = 'CONNECT_ERROR';
+      _lastErrorMessage = e.toString();
       connectedSuccessfully = false;
     }
 
@@ -523,6 +646,7 @@ Endpoint = 129.225.114.149:51820''';
 
   Future<void> disconnect() async {
     _cancelRequested = true;
+    _awaitingIosTunnelResume = false;
     _status = VpnStatus.disconnecting;
     notifyListeners();
 
@@ -535,6 +659,17 @@ Endpoint = 129.225.114.149:51820''';
       } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
         await _deactivateWindowsTunnel();
         await _deactivateWindowsOpenVpnTunnel();
+      }
+    } on PlatformException catch (e) {
+      debugPrint('[iMask VPN] disconnect PlatformException (${e.code}): ${e.message}');
+      if (e.code == 'IOS_MANUAL_DISCONNECT') {
+        _lastErrorCode = e.code;
+        _lastErrorMessage = e.message;
+        _status = VpnStatus.connected;
+        _startTimers();
+        notifyListeners();
+        onIosManualDisconnectRequired?.call();
+        return;
       }
     } catch (e) {
       debugPrint('[iMask VPN] disconnect error: $e');

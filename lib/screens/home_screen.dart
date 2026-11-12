@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
@@ -15,8 +16,28 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String? _lastUserUid;
+  bool _isIosDialogOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      context.read<VpnService>().syncWithSystemTunnel();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -101,6 +122,16 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       );
+    };
+
+    vpn.onIosTunnelSetupRequired = () {
+      if (!mounted || _isIosDialogOpen) return;
+      _showIosTunnelSetupDialog(vpn, isDark, textPrimary, textSecondary);
+    };
+
+    vpn.onIosManualDisconnectRequired = () {
+      if (!mounted || _isIosDialogOpen) return;
+      _showIosManualDisconnectDialog(vpn, isDark, textPrimary, textSecondary);
     };
 
     return Scaffold(
@@ -884,5 +915,160 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       },
     );
+  }
+
+  Future<void> _showIosTunnelSetupDialog(
+    VpnService vpn,
+    bool isDark,
+    Color textPrimary,
+    Color textSecondary,
+  ) async {
+    _isIosDialogOpen = true;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF131A29) : Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(color: isDark ? Colors.white12 : Colors.black, width: 2),
+        ),
+        title: Row(
+          children: [
+            Icon(
+              Icons.vpn_lock_rounded,
+              color: isDark ? const Color(0xFF00F2FE) : Colors.black,
+              size: 24,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Enable iPhone VPN Tunnel',
+                style: TextStyle(
+                  color: textPrimary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Apple blocks in-app VPN toggles for free sideloaded apps. Pair the official WireGuard app once to enable the status bar VPN icon and real IP routing:',
+              style: TextStyle(color: textSecondary, fontSize: 12.5, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '1. Install WireGuard from the App Store.\n'
+              '2. Tap "Import Config" below and choose WireGuard (or Save to Files -> WireGuard -> + -> From file).\n'
+              '3. Turn the iMask-VPN tunnel ON inside WireGuard, then return here.',
+              style: TextStyle(color: textPrimary, fontSize: 12.5, height: 1.45),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => vpn.openIosAppStoreWireGuard(),
+                icon: const Icon(Icons.download_rounded, size: 18),
+                label: const Text('1. Get WireGuard (App Store)'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isDark ? const Color(0xFF00F2FE) : Colors.black,
+                  foregroundColor: isDark ? Colors.black : Colors.white,
+                ),
+                onPressed: () => vpn.shareIosWireGuardConfig(),
+                icon: const Icon(Icons.ios_share_rounded, size: 18),
+                label: const Text(
+                  '2. Import iMask-VPN.conf',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Center(
+              child: TextButton.icon(
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: vpn.iosWireGuardConfig));
+                  if (ctx.mounted) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      const SnackBar(content: Text('WireGuard config copied to clipboard')),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.copy_rounded, size: 15),
+                label: Text('Copy Raw Config', style: TextStyle(color: textSecondary, fontSize: 12)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Close', style: TextStyle(color: textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              vpn.connect();
+            },
+            child: const Text('Check & Connect'),
+          ),
+        ],
+      ),
+    );
+    _isIosDialogOpen = false;
+  }
+
+  Future<void> _showIosManualDisconnectDialog(
+    VpnService vpn,
+    bool isDark,
+    Color textPrimary,
+    Color textSecondary,
+  ) async {
+    _isIosDialogOpen = true;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF131A29) : Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(color: isDark ? Colors.white12 : Colors.black, width: 2),
+        ),
+        title: Text(
+          'System VPN Still Active',
+          style: TextStyle(color: textPrimary, fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        content: Text(
+          'Your iPhone WireGuard tunnel is still running in iOS. Open Settings > VPN (or the WireGuard app) and toggle it OFF to stop routing your IP.',
+          style: TextStyle(color: textSecondary, fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Keep Connected', style: TextStyle(color: textSecondary)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: isDark ? const Color(0xFF00F2FE) : Colors.black,
+              foregroundColor: isDark ? Colors.black : Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              vpn.openIosVpnSettings();
+            },
+            child: const Text('Open VPN Settings', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    _isIosDialogOpen = false;
   }
 }
