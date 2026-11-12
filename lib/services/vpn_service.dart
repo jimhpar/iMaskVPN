@@ -239,6 +239,19 @@ Endpoint = 129.225.114.149:51820''';
     }
   }
 
+  Future<bool> openIosProfileInstaller() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
+    try {
+      final ok = await _androidVpnChannel.invokeMethod<bool>(
+        'openExternalUrl',
+        {'url': 'http://129.225.114.149:51821/api/ios-profile'},
+      );
+      return ok == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<bool> openIosAppStoreWireGuard() async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
     try {

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
@@ -957,26 +956,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Apple blocks in-app VPN toggles for free sideloaded apps. Pair the official WireGuard app once to enable the status bar VPN icon and real IP routing:',
+              'No extra VPN app needed! Install the iMask VPN profile once to enable native iOS VPN and the status bar VPN icon:',
               style: TextStyle(color: textSecondary, fontSize: 12.5, height: 1.4),
             ),
             const SizedBox(height: 12),
             Text(
-              '1. Install WireGuard from the App Store.\n'
-              '2. Tap "Import Config" below and choose WireGuard (or Save to Files -> WireGuard -> + -> From file).\n'
-              '3. Turn the iMask-VPN tunnel ON inside WireGuard, then return here.',
+              '1. Tap "Install iOS VPN Profile" below -> tap Allow in Safari.\n'
+              '2. Open iPhone Settings -> Profile Downloaded -> Install.\n'
+              '3. Go to Settings -> VPN, toggle "iMask VPN" ON, then return here.',
               style: TextStyle(color: textPrimary, fontSize: 12.5, height: 1.45),
             ),
             const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () => vpn.openIosAppStoreWireGuard(),
-                icon: const Icon(Icons.download_rounded, size: 18),
-                label: const Text('1. Get WireGuard (App Store)'),
-              ),
-            ),
-            const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -984,27 +974,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   backgroundColor: isDark ? const Color(0xFF00F2FE) : Colors.black,
                   foregroundColor: isDark ? Colors.black : Colors.white,
                 ),
-                onPressed: () => vpn.shareIosWireGuardConfig(),
-                icon: const Icon(Icons.ios_share_rounded, size: 18),
+                onPressed: () => vpn.openIosProfileInstaller(),
+                icon: const Icon(Icons.verified_user_rounded, size: 18),
                 label: const Text(
-                  '2. Import iMask-VPN.conf',
+                  '1. Install iOS VPN Profile',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
             ),
-            const SizedBox(height: 6),
-            Center(
-              child: TextButton.icon(
-                onPressed: () async {
-                  await Clipboard.setData(ClipboardData(text: vpn.iosWireGuardConfig));
-                  if (ctx.mounted) {
-                    ScaffoldMessenger.of(ctx).showSnackBar(
-                      const SnackBar(content: Text('WireGuard config copied to clipboard')),
-                    );
-                  }
-                },
-                icon: const Icon(Icons.copy_rounded, size: 15),
-                label: Text('Copy Raw Config', style: TextStyle(color: textSecondary, fontSize: 12)),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => vpn.openIosVpnSettings(),
+                icon: const Icon(Icons.settings_rounded, size: 18),
+                label: const Text('2. Open iPhone VPN Settings'),
               ),
             ),
           ],
@@ -1047,7 +1031,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           style: TextStyle(color: textPrimary, fontWeight: FontWeight.bold, fontSize: 16),
         ),
         content: Text(
-          'Your iPhone WireGuard tunnel is still running in iOS. Open Settings > VPN (or the WireGuard app) and toggle it OFF to stop routing your IP.',
+          'Your iPhone VPN tunnel is still running in iOS. Open Settings > VPN (or Control Center) and toggle "iMask VPN" OFF to disconnect completely.',
           style: TextStyle(color: textSecondary, fontSize: 13, height: 1.4),
         ),
         actions: [
